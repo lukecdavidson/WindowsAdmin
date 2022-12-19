@@ -6,7 +6,7 @@
 
     Param (
         [Parameter(Mandatory=$true)]
-        [hashtable]
+        [array]
         $DefaultDisplaySet,
 
         [Parameter(Mandatory=$true)]
