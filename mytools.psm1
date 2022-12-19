@@ -1,4 +1,27 @@
-﻿function Connect-Azure {
+﻿function Set-DefaultDisplaySet {
+    <#
+        .Description
+        Sets the default display set for object output.
+    #>
+
+    Param (
+        [Parameter(Mandatory=$true)]
+        [hashtable]
+        $DefaultDisplaySet,
+
+        [Parameter(Mandatory=$true)]
+        [object]
+        $Object
+    )
+
+    $DefaultDisplayPropertySet = New-Object System.Management.Automation.PSPropertySet(‘DefaultDisplayPropertySet’,[string[]]$DefaultDisplaySet)
+    $PSStandardMembers = [System.Management.Automation.PSMemberInfo[]]@($DefaultDisplayPropertySet)
+    $Object | Add-Member MemberSet PSStandardMembers $PSStandardMembers
+
+    return $Object
+}
+
+function Connect-Azure {
     <#
         .Description
         Connects to AzureAD. Used in conjunction with other scripts where authentication to Azure AD is needed.
@@ -7,7 +30,7 @@
     Write-Warning 'Azure AD authentication needed.'
     $Question = 'Connect to Azure AD via Connect-AzureAD?'
     $Choices  = '&Yes', '&No'
-    
+
     $Decision = $Host.UI.PromptForChoice($Title, $Question, $Choices, 1)
 
     if ($Decision -eq 0) {
@@ -37,20 +60,15 @@ function Get-User {
         $Identity
     )
 
-    $User = Get-ADUser -Identity $Identity -Properties * 
+    $User = Get-ADUser -Identity $Identity -Properties *
     $Subordinates = (Get-ADUser -Filter "Manager -eq '$User'").Name
+    $User | Add-Member -Type NoteProperty -Value $Subordinates -Name Subordinates
 
-    Write-Output $User | Select-Object `
-        DisplayName,`
-        Title,`
-        Department,`
-        @{N='Site';E={$_.physicalDeliveryOfficeName}},`
-        @{N='Manager';E={((($_.Manager -split 'CN=')[1]) -split ',')[0]}},`
-        @{N='Subordinates';E={$Subordinates}},`
-        @{N='Phone';E={$_.telephoneNumber}},`
-        @{N='Email';E={$_.mail}},`
-        @{N='Created';E={$_.whenCreated}},`
-        @{N='Organization Unit';E={($_.DistinguishedName -split ',',2)[1]}}
+    $DefaultDisplaySet = 'DisplayName', 'Title', 'Department', 'physicalDeliveryOfficeName', 'Manager', 'Subordinates', `
+      'telephoneNumber', 'Mail', 'whenCreated', 'DistinguishedName', 'Subordinates'
+    $User = Set-DefaultDisplaySet -DefaultDisplaySet $defaultDisplaySet -Object $User
+
+    return $User
 }
 
 function Get-UserGroups {
@@ -77,13 +95,14 @@ function Get-UserGroups {
         $Output
     )
 
-    $User = Get-ADUser -Identity $Identity -Properties memberOf | Select-Object memberOf
-    switch ($Output) {
-        short { $User | Select-Object -ExpandProperty memberOf | ForEach-Object{((($_ -split 'CN=')[1]) -split ',')[0]} | Sort-Object }
-        long { $User | Select-Object -ExpandProperty memberOf | Sort-Object }
-        object { $User }
-        Default { $User | Select-Object -ExpandProperty memberOf | ForEach-Object{((($_ -split 'CN=')[1]) -split ',')[0]} | Sort-Object }
-    }
+    $User = Get-ADUser -Identity $Identity -Properties memberOf
+    $Groups = $User.memberOf | ForEach-Object{((($_ -split 'CN=')[1]) -split ',')[0]} | Sort-Object
+    $User | Add-Member -Type NoteProperty -Name Groups -Value $Groups
+
+    $DefaultDisplaySet = 'Groups'
+    $User = Set-DefaultDisplaySet -DefaultDisplaySet $defaultDisplaySet -Object $User
+
+    return $User
 }
 
 function Compare-UserGroups {
@@ -93,9 +112,6 @@ function Compare-UserGroups {
 
         .EXAMPLE
         Compare-UserGroups luked luiso
-
-        .EXAMPLE
-        Compare-UserGroups luked luiso -DiffType luked -Output long
 
         .FORWARDHELPCATEGORY Alias
         groupdiff
@@ -110,34 +126,23 @@ function Compare-UserGroups {
         # User AD Identity2
         [Parameter(Mandatory=$true, Position=1, ValueFromPipeline=$true)]
         [string]
-        $Identity2,
-
-        # Output diff type
-        [Parameter(Mandatory=$false, Position=2, ValueFromPipeline=$false)]
-        [string]
-        $DiffType,
-
-        # Output as object
-        [Parameter(Mandatory=$false, Position=3, ValueFromPipeline=$false)]
-        [string]
-        $Output
+        $Identity2
     )
 
     $User1 = Get-ADUser -Identity $Identity1 -Properties memberOf | Select-Object -ExpandProperty memberOf
-    $User2 = Get-ADUser -Identity $Identity2 -Properties memberOf | Select-Object -ExpandProperty memberOf
-    $Diff = Compare-Object $User1 $User2
+    $Groups1 = $User1.memberOf | ForEach-Object{((($_ -split 'CN=')[1]) -split ',')[0]} | Sort-Object
+    $User1 | Add-Member -Type NoteProperty -Name Groups -Value $Groups1
 
-    switch ($DiffType) {
-        $User1 { $Diff = $Diff | Where-Object SideIndicator -eq '<=' }
-        $User2 { $Diff = $Diff | Where-Object SideIndicator -eq '=>' }
-        Diff { }
-        Default { }
-    }
-    switch ($Output) {
-        short { $Diff | ForEach-Object{((($_ -split 'CN=')[1]) -split ',')[0]} | Sort-Object }
-        long { $Diff | Sort-Object }
-        Default { $Diff | ForEach-Object{((($_ -split 'CN=')[1]) -split ',')[0]} | Sort-Object }
-    }
+    $User2 = Get-ADUser -Identity $Identity2 -Properties memberOf | Select-Object -ExpandProperty memberOf
+    $Groups2 = $User2.memberOf | ForEach-Object{((($_ -split 'CN=')[1]) -split ',')[0]} | Sort-Object
+    $User2 | Add-Member -Type NoteProperty -Name Groups -Value $Groups2
+
+    $Diff = Compare-Object $User1 $User2 -Property Groups, memberOf
+
+    $DefaultDisplaySet = 'Groups'
+    $Diff = Set-DefaultDisplaySet -DefaultDisplaySet $defaultDisplaySet -Object $Diff
+
+    return $Diff
 }
 
 function Get-UserAADGroups {
@@ -197,21 +202,15 @@ function Get-UserName {
     Param(
         [Parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true)]
         [string]
-        $Identity,
-
-        # Output as object
-        [Parameter(Mandatory=$false, Position=1, ValueFromPipeline=$false)]
-        [string]
-        $Output
+        $Identity
     )
     $Users = Get-ADUser -Filter "DisplayName -like '*$Identity*'"
-    switch ($Output) {
-        short { $Users | Select-Object -ExpandProperty Name }
-        long { foreach ($User in $Users) { user -Identity $User } }
-        object { $Users }
-        Default { $Users | Select-Object -ExpandProperty Name }
-    }
-    
+
+    $DefaultDisplaySet = 'DisplayName', 'Name', 'Enabled', 'LockedOut', 'PasswordExpired', 'PasswordLastSet', `
+      'LastBadPasswordAttempt', 'LastLogonDate', 'Modified', 'DistinguishedName'
+    $Users = Set-DefaultDisplaySet -DefaultDisplaySet $defaultDisplaySet -Object $Users
+
+    return $Users
 }
 
 function Get-UserPWInfo {
@@ -230,29 +229,16 @@ function Get-UserPWInfo {
         # Active Directory Identity for user
         [Parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true)]
         [string]
-        $Identity,
-
-        # Action to take: view user or reset password. Defaults to view
-        [Parameter(Mandatory=$false, Position=1, ValueFromPipeline=$false)]
-        [string]
-        $Action="view"
+        $Identity
     )
-    $User = Get-ADUser -Identity $Identity -Properties * | Select-Object `
-        DisplayName,`
-        Name,`
-        Enabled,`
-        LockedOut,`
-        PasswordExpired,`
-        PasswordLastSet,`
-        LastBadPasswordAttempt,`
-        LastLogonDate,`
-        Modified,`
-        DistinguishedName
-    switch ($Action) {
-        view { Write-Output $User }
-        unlock { Unlock-ADAccount -Identity $Identity}
-        Default { Write-Output $User }
-    }
+
+    $User = Get-ADUser -Identity $Identity -Properties *
+
+    $DefaultDisplaySet = 'DisplayName', 'Name', 'Enabled', 'LockedOut', 'PasswordExpired', 'PasswordLastSet', `
+      'LastBadPasswordAttempt', 'LastLogonDate', 'Modified', 'DistinguishedName'
+    $User = Set-DefaultDisplaySet -DefaultDisplaySet $defaultDisplaySet -Object $User
+
+    return $User
 }
 
 function Connect-PS {
@@ -274,7 +260,7 @@ function Connect-PS {
         $Computer
     )
     $IAAccount = "$Env:USERDOMAIN\$Env:USERNAME-IA"
-    
+
     $OS = Get-ADComputer $Computer -Properties OperatingSystem | Select-Object -ExpandProperty OperatingSystem
     if ($OS -like '*Server*') {
         Enter-PSSession -ComputerName $Computer -Credential $IAAccount
@@ -310,12 +296,7 @@ function Search-Computer {
         # Switch to include description in the search
         [Parameter(Mandatory=$false, ValueFromPipeline=$false)]
         [switch]
-        $Description,
-
-        # Format of output
-        [Parameter(Mandatory=$false, ValueFromPipeline=$false)]
-        [string]
-        $Output
+        $Description
     )
     if ($Description -eq $True) {
         $Filter = "Name -like '*$Computer*' -or SamAccountName -like '*$Computer*' -or Description -like '*$Computer*'"
@@ -330,12 +311,10 @@ function Search-Computer {
 
     $Computers = Get-ADComputer -Filter $Filter -Properties *
 
-    switch ($Output) {
-        short { $Computers | Select-Object -ExpandProperty Name }
-        long { $Computers | Select-Object Name, SamAccountName, Description, Location }
-        object { $Computers }
-        Default { $Computers | Select-Object Name, Description, Location }
-    }
+    $DefaultDisplaySet = 'Name', 'SamAccountName', 'Description', 'Location'
+    $Computers = Set-DefaultDisplaySet -DefaultDisplaySet $defaultDisplaySet -Object $Computers
+
+    return $Computers
 }
 
 function Copy-ItemOverPS {
@@ -407,21 +386,16 @@ function Get-UserTeam {
         # User to get the team members of
         [Parameter(Mandatory=$false, Position=0, ValueFromPipeline=$true)]
         [string]
-        $Identity=$env:USERNAME,
+        $Identity=$env:USERNAME
+    )
 
-        # Format of output
-        [Parameter(Mandatory=$false, ValueFromPipeline=$false)]
-        [string]
-        $Output
-    ) 
     $Manager = Get-ADUser -Identity $Identity -Properties Manager | Select-Object -ExpandProperty Manager
     $TeamMembers = Get-ADUser -Filter "Manager -eq '$Manager'" -Properties *
-    switch ($Output) {
-        short { $TeamMembers | Select-Object -ExpandProperty DisplayName }
-        long { $TeamMembers | Select-Object Name }
-        object { $TeamMembers }
-        Default { $TeamMembers | Select-Object -ExpandProperty DisplayName }
-    }
+
+    $DefaultDisplaySet = 'DisplayName', 'Name', 'Title', 'Office', 'Telephone', 'Mail'
+    $TeamMembers = Set-DefaultDisplaySet -DefaultDisplaySet $defaultDisplaySet -Object $TeamMembers
+
+    return $TeamMembers
 }
 
 function mtree {
@@ -441,7 +415,7 @@ function mtree {
         # Get-ADUser for the manager and set that as the new user to check.
         $User = Get-ADUser -Identity $User.Manager -Properties DisplayName, Manager
     }
-    
+
     # Get a count of the list then use that to loop over the list in reverse.
     for ($index=$ManagerChain.Count; $index -ge 0; $index--) {
         $ManagerName = ($ManagerChain[$index]).DisplayName
@@ -459,9 +433,9 @@ function Open-MFPWebInterface {
         [Parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true)]
         [string]
         $Printer
-    ) 
+    )
     $IPAddress = Get-ADPrinter $Printer | Select-Object -First 1 -ExpandProperty PortName
-    Start-Process http://$IPAddress    
+    Start-Process http://$IPAddress
 }
 
 function Get-Site {
@@ -501,4 +475,16 @@ Set-Alias -Name pscp -Value Copy-ItemOverPS
 Set-Alias -Name w -Value Get-Sessions
 Set-Alias -Name team -Value Get-UserTeam
 
-Export-ModuleMember -Function * -Alias *
+Export-ModuleMember -Alias * -Function `
+  Get-User`
+  Get-UserGroups`
+  Compare-UserGroups`
+  Get-UserName`
+  Get-UserPWInfo`
+  Connect-PS`
+  Search-Computer`
+  Copy-ItemOverPS`
+  Get-Sessions`
+  Get-UserTeam`
+  Open-MFPWebInterface`
+  Get-Site`
